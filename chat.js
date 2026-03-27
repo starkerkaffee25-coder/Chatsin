@@ -175,23 +175,49 @@ async function carregarMaisAntigas() {
 }
 
 btnEnviar.onclick = async () => {
-  const texto = msgInput.value.trim();
-  if (!texto) return;
-
-  const { error } = await db.from("mensagens").insert({
-    usuario_id: usuarioLogadoId,
-    nome: usuarioLogado,
-    avatar_url: avatarLogado,
-    texto
-  });
-
-  if (error) {
-    console.error(error);
+  if (!usuarioLogado || !usuarioLogadoId) {
+    showSystemMessage("Faça login primeiro.");
     return;
   }
 
-  msgInput.value = "";
+  const texto = msgInput.value.trim();
+
+  if (!texto) {
+    showSystemMessage("Mensagem vazia não pode ser enviada.");
+    return;
+  }
+
+  // Desabilita o botão para prevenir múltiplos cliques
+  btnEnviar.disabled = true;
+  msgInput.disabled = true;
+
+  try {
+    const { error } = await db.from("mensagens").insert({
+      usuario_id: usuarioLogadoId,
+      nome: usuarioLogado,
+      avatar_url: avatarLogado,
+      texto
+    });
+
+    if (error) {
+      showSystemMessage("Erro ao enviar mensagem: " + error.message);
+    } else {
+      msgInput.value = "";
+    }
+  } finally {
+    // Reabilita o botão após envio
+    btnEnviar.disabled = false;
+    msgInput.disabled = false;
+    msgInput.focus();
+  }
 };
+
+msgInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { // Enter sem Shift
+    e.preventDefault(); // evita quebrar linha
+    btnEnviar.click();  // simula clique no botão enviar
+  }
+});
 
 db.channel("chat")
   .on("postgres_changes", {
