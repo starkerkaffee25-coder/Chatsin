@@ -9,8 +9,10 @@ const db = window.supabase.createClient(
   "sb_publishable_1qmZEoIh-pufPGWwhMl_KA_re4u-eyp"
 );
 
-if (localStorage.getItem("usuarioLogado")) {
-  window.location.href = "chat.html";
+const SESSION_KEY = "usuarioLogado";
+
+if (sessionStorage.getItem(SESSION_KEY)) {
+  sessionStorage.removeItem(SESSION_KEY);
 }
 
 function initials(name) {
@@ -108,7 +110,7 @@ document.getElementById("btnLogin").onclick = async () => {
     return;
   }
 
-  localStorage.setItem("usuarioLogado", JSON.stringify({
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({
     id: data.id,
     nome: data.nome,
     avatar_url: data.avatar_url || null
