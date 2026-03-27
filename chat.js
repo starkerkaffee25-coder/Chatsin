@@ -3,6 +3,8 @@ const db = window.supabase.createClient(
   "sb_publishable_1qmZEoIh-pufPGWwhMl_KA_re4u-eyp"
 );
 
+const SESSION_KEY = "usuarioLogado";
+
 function initials(name) {
   const n = (name || "").trim();
   if (!n) return "?";
@@ -34,22 +36,22 @@ function setAvatar(el, name, url) {
   }
 }
 
-const rawUser = localStorage.getItem("usuarioLogado");
+const rawUser = sessionStorage.getItem(SESSION_KEY);
 if (!rawUser) {
-  window.location.href = "login.html";
+  window.location.href = "index.html";
 }
 
 let userData;
 try {
   userData = JSON.parse(rawUser);
 } catch {
-  localStorage.removeItem("usuarioLogado");
-  window.location.href = "login.html";
+  sessionStorage.removeItem(SESSION_KEY);
+  window.location.href = "index.html";
 }
 
 if (!userData?.id || !userData?.nome) {
-  localStorage.removeItem("usuarioLogado");
-  window.location.href = "login.html";
+  sessionStorage.removeItem(SESSION_KEY);
+  window.location.href = "index.html";
 }
 
 const usuarioLogado = userData.nome;
@@ -68,8 +70,8 @@ currentName.textContent = usuarioLogado;
 setAvatar(headerAvatar, usuarioLogado, avatarLogado);
 
 btnLogout.onclick = () => {
-  localStorage.removeItem("usuarioLogado");
-  window.location.href = "login.html";
+  sessionStorage.removeItem(SESSION_KEY);
+  window.location.href = "index.html";
 };
 
 function isNearBottom(el) {
@@ -192,7 +194,11 @@ btnEnviar.onclick = async () => {
 };
 
 db.channel("chat")
-  .on("postgres_changes", { event: "INSERT", schema: "public", table: "mensagens" }, payload => {
+  .on("postgres_changes", {
+    event: "INSERT",
+    schema: "public",
+    table: "mensagens"
+  }, payload => {
     const shouldScroll = isNearBottom(chatFeed);
 
     chat.appendChild(
