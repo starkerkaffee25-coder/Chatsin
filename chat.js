@@ -5,6 +5,8 @@ const db = window.supabase.createClient(
 
 const SESSION_KEY = "usuarioLogado";
 const IMAGE_BUCKET = "chat-media";
+const PAGE_SIZE = 25;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 function initials(name) {
   const n = (name || "").trim();
@@ -13,15 +15,6 @@ function initials(name) {
   const a = parts[0]?.[0] || "";
   const b = parts[1]?.[0] || "";
   return (a + b).toUpperCase();
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function setAvatar(el, name, url) {
@@ -36,6 +29,62 @@ function setAvatar(el, name, url) {
     el.appendChild(img);
   } else {
     el.textContent = initials(name);
+  }
+}
+
+function getSafeId() {
+  if (window.crypto?.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getExtFromMime(type) {
+  const raw = (type || "").split("/")[1] || "png";
+  if (raw === "jpeg") return "jpg";
+  if (raw === "svg+xml") return "svg";
+  return raw;
+}
+
+async function uploadPublicImage(file, folderPrefix) {
+  if (!file || !file.type || !file.type.startsWith("image/")) {
+    throw new Error("O arquivo selecionado não é uma imagem.");
+  }
+
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new Error("Imagem maior que 10 MB.");
+  }
+
+  const safeId = getSafeId();
+  const ext = getExtFromMime(file.type);
+  const path = `${folderPrefix}/${Date.now()}-${safeId}.${ext}`;
+
+  const { error: uploadError } = await db.storage
+    .from(IMAGE_BUCKET)
+    .upload(path, file, {
+      contentType: file.type,
+      upsert: false,
+      cacheControl: "3600"
+    });
+
+  if (uploadError) {
+    throw uploadError;
+  }
+
+  const { data: publicData } = db.storage
+    .from(IMAGE_BUCKET)
+    .getPublicUrl(path);
+
+  return {
+    path,
+    url: publicData?.publicUrl || ""
+  };
+}
+
+async function removeStorageObject(path) {
+  if (!path) return;
+  try {
+    await db.storage.from(IMAGE_BUCKET).remove([path]);
+  } catch (err) {
+    console.warn("Falha ao remover arquivo:", err);
   }
 }
 
@@ -57,9 +106,10 @@ if (!userData?.id || !userData?.nome) {
   window.location.href = "index.html";
 }
 
-const usuarioLogado = userData.nome;
-const usuarioLogadoId = userData.id;
-const avatarLogado = userData.avatar_url || null;
+let usuarioLogado = userData.nome;
+let usuarioLogadoId = userData.id;
+let avatarLogado = userData.avatar_url || null;
+let avatarPathLogado = userData.avatar_path || null;
 
 const headerAvatar = document.getElementById("headerAvatar");
 const currentName = document.getElementById("currentName");
@@ -67,16 +117,50 @@ const chat = document.getElementById("chat");
 const chatFeed = document.getElementById("chatFeed");
 const msgInput = document.getElementById("msg");
 const btnEnviar = document.getElementById("btnEnviar");
+const btnPickImage = document.getElementById("btnPickImage");
+const chatImageFile = document.getElementById("chatImageFile");
 const btnLogout = document.getElementById("btnLogout");
-const composer = document.querySelector(".composer");
+const btnProfile = document.getElementById("btnProfile");
+const profileModal = document.getElementById("profileModal");
+const profileModalBackdrop = document.getElementById("profileModalBackdrop");
+const btnCloseProfile = document.getElementById("btnCloseProfile");
+const profileAvatarPreview = document.getElementById("profileAvatarPreview");
+const profileAvatarUrlInput = document.getElementById("profileAvatarUrl");
+const profileAvatarFileInput = document.getElementById("profileAvatarFile");
+const btnPickProfileAvatar = document.getElementById("btnPickProfileAvatar");
+const btnClearProfileAvatar = document.getElementById("btnClearProfileAvatar");
+const btnSaveProfileAvatar = document.getElementById("btnSaveProfileAvatar");
+const profileCurrentPassword = document.getElementById("profileCurrentPassword");
+const profileNewPassword = document.getElementById("profileNewPassword");
+const profileConfirmPassword = document.getElementById("profileConfirmPassword");
+const btnChangePassword = document.getElementById("btnChangePassword");
+const profileStatus = document.getElementById("profileStatus");
 
 currentName.textContent = usuarioLogado;
 setAvatar(headerAvatar, usuarioLogado, avatarLogado);
 
-btnLogout.onclick = () => {
-  sessionStorage.removeItem(SESSION_KEY);
-  window.location.href = "index.html";
-};
+let oldestLoadedId = null;
+let loadingOlder = false;
+let busy = false;
+let profileAvatarFile = null;
+let profileAvatarObjectUrl = null;
+
+function setBusy(state) {
+  busy = state;
+  btnEnviar.disabled = state;
+  btnPickImage.disabled = state;
+  chatImageFile.disabled = state;
+  btnLogout.disabled = state;
+  btnProfile.disabled = state;
+  btnSaveProfileAvatar.disabled = state;
+  btnChangePassword.disabled = state;
+  btnPickProfileAvatar.disabled = state;
+  btnClearProfileAvatar.disabled = state;
+}
+
+function showProfileStatus(msg) {
+  profileStatus.textContent = msg || "";
+}
 
 function isNearBottom(el) {
   return (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
@@ -161,72 +245,152 @@ function removeMessageNode(id) {
   if (node) node.remove();
 }
 
-let oldestLoadedId = null;
-let loadingOlder = false;
-let busy = false;
-const PAGE_SIZE = 25;
-
-const uploadBtn = document.createElement("button");
-uploadBtn.type = "button";
-uploadBtn.textContent = "Imagem";
-uploadBtn.style.width = "auto";
-uploadBtn.style.padding = "14px 16px";
-uploadBtn.style.background = "#263143";
-uploadBtn.style.color = "#fff";
-uploadBtn.style.border = "1px solid #334155";
-
-const hiddenFileInput = document.createElement("input");
-hiddenFileInput.type = "file";
-hiddenFileInput.accept = "image/*";
-hiddenFileInput.style.display = "none";
-document.body.appendChild(hiddenFileInput);
-
-composer.style.gridTemplateColumns = "1fr auto auto";
-composer.insertBefore(uploadBtn, btnEnviar);
-
-function setBusy(state) {
-  busy = state;
-  btnEnviar.disabled = state;
-  uploadBtn.disabled = state;
+function clearProfileAvatarSelection() {
+  profileAvatarFile = null;
+  if (profileAvatarObjectUrl) {
+    URL.revokeObjectURL(profileAvatarObjectUrl);
+    profileAvatarObjectUrl = null;
+  }
+  profileAvatarFileInput.value = "";
 }
 
-function getExtFromMime(type) {
-  const raw = (type || "").split("/")[1] || "png";
-  if (raw === "jpeg") return "jpg";
-  if (raw === "svg+xml") return "svg";
-  return raw;
+function renderProfileAvatarPreview() {
+  const source = profileAvatarObjectUrl
+    || profileAvatarUrlInput.value.trim()
+    || avatarLogado
+    || "";
+
+  setAvatar(profileAvatarPreview, usuarioLogado, source);
 }
 
-async function sendTextMessage() {
+function setProfileAvatarFile(file) {
+  if (!file || !file.type || !file.type.startsWith("image/")) {
+    return false;
+  }
+
+  clearProfileAvatarSelection();
+  profileAvatarFile = file;
+  profileAvatarObjectUrl = URL.createObjectURL(file);
+  profileAvatarUrlInput.value = "";
+  renderProfileAvatarPreview();
+  return true;
+}
+
+function openProfileModal() {
+  showProfileStatus("");
+  clearProfileAvatarSelection();
+
+  profileAvatarUrlInput.value = avatarLogado || "";
+  profileCurrentPassword.value = "";
+  profileNewPassword.value = "";
+  profileConfirmPassword.value = "";
+
+  renderProfileAvatarPreview();
+
+  profileModal.classList.remove("hidden");
+  profileModal.setAttribute("aria-hidden", "false");
+}
+
+function closeProfileModal() {
+  clearProfileAvatarSelection();
+  profileModal.classList.add("hidden");
+  profileModal.setAttribute("aria-hidden", "true");
+}
+
+btnLogout.onclick = () => {
+  sessionStorage.removeItem(SESSION_KEY);
+  window.location.href = "index.html";
+};
+
+btnProfile.onclick = openProfileModal;
+btnCloseProfile.onclick = closeProfileModal;
+profileModalBackdrop.onclick = closeProfileModal;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !profileModal.classList.contains("hidden")) {
+    closeProfileModal();
+  }
+});
+
+btnPickProfileAvatar.onclick = () => profileAvatarFileInput.click();
+
+btnClearProfileAvatar.onclick = () => {
+  clearProfileAvatarSelection();
+  profileAvatarUrlInput.value = "";
+  renderProfileAvatarPreview();
+};
+
+profileAvatarFileInput.addEventListener("change", () => {
+  const file = profileAvatarFileInput.files?.[0];
+  if (!file) return;
+  setProfileAvatarFile(file);
+});
+
+profileAvatarUrlInput.addEventListener("input", () => {
+  if (profileAvatarUrlInput.value.trim()) {
+    clearProfileAvatarSelection();
+  }
+  renderProfileAvatarPreview();
+});
+
+const profilePasteHandler = (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItem = items.find(
+    (item) => item.kind === "file" && item.type.startsWith("image/")
+  );
+
+  if (!imageItem) return;
+
+  const file = imageItem.getAsFile();
+  if (!file) return;
+
+  e.preventDefault();
+  setProfileAvatarFile(file);
+};
+
+profileAvatarUrlInput.addEventListener("paste", profilePasteHandler);
+profileAvatarPreview.addEventListener("paste", profilePasteHandler);
+profileAvatarPreview.addEventListener("click", () => profileAvatarFileInput.click());
+profileAvatarPreview.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    profileAvatarFileInput.click();
+  }
+});
+
+function sendTextMessage() {
   if (busy) return;
 
   const texto = msgInput.value.trim();
   if (!texto) return;
 
   setBusy(true);
-  try {
-    const { error } = await db.from("mensagens").insert({
-      usuario_id: usuarioLogadoId,
-      nome: usuarioLogado,
-      avatar_url: avatarLogado,
-      texto,
-      message_kind: "text",
-      image_url: null,
-      image_path: null,
-      image_size_bytes: null,
-      image_mime: null
-    });
 
-    if (error) {
-      alert("Erro ao enviar mensagem: " + error.message);
-      return;
+  (async () => {
+    try {
+      const { error } = await db.from("mensagens").insert({
+        usuario_id: usuarioLogadoId,
+        nome: usuarioLogado,
+        avatar_url: avatarLogado,
+        texto,
+        message_kind: "text",
+        image_url: null,
+        image_path: null,
+        image_size_bytes: null,
+        image_mime: null
+      });
+
+      if (error) {
+        alert("Erro ao enviar mensagem: " + error.message);
+        return;
+      }
+
+      msgInput.value = "";
+    } finally {
+      setBusy(false);
+      msgInput.focus();
     }
-
-    msgInput.value = "";
-  } finally {
-    setBusy(false);
-    msgInput.focus();
-  }
+  })();
 }
 
 async function sendImageFile(file) {
@@ -237,30 +401,15 @@ async function sendImageFile(file) {
     return;
   }
 
+  if (file.size > MAX_IMAGE_BYTES) {
+    alert("Imagem maior que 10 MB.");
+    return;
+  }
+
   setBusy(true);
+
   try {
-    const safeId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const ext = getExtFromMime(file.type);
-    const path = `${usuarioLogadoId}/${Date.now()}-${safeId}.${ext}`;
-
-    const { error: uploadError } = await db.storage
-      .from(IMAGE_BUCKET)
-      .upload(path, file, {
-        contentType: file.type,
-        upsert: false,
-        cacheControl: "3600"
-      });
-
-    if (uploadError) {
-      alert("Erro ao enviar imagem: " + uploadError.message);
-      return;
-    }
-
-    const { data: publicData } = db.storage
-      .from(IMAGE_BUCKET)
-      .getPublicUrl(path);
-
-    const publicUrl = publicData?.publicUrl;
+    const uploaded = await uploadPublicImage(file, `messages/${usuarioLogadoId}`);
 
     const { error: insertError } = await db.from("mensagens").insert({
       usuario_id: usuarioLogadoId,
@@ -268,14 +417,14 @@ async function sendImageFile(file) {
       avatar_url: avatarLogado,
       texto: "",
       message_kind: "image",
-      image_url: publicUrl,
-      image_path: path,
+      image_url: uploaded.url,
+      image_path: uploaded.path,
       image_size_bytes: file.size,
       image_mime: file.type
     });
 
     if (insertError) {
-      await db.storage.from(IMAGE_BUCKET).remove([path]);
+      await removeStorageObject(uploaded.path);
       alert("Erro ao registrar imagem: " + insertError.message);
       return;
     }
@@ -284,14 +433,143 @@ async function sendImageFile(file) {
   } finally {
     setBusy(false);
     msgInput.focus();
-    hiddenFileInput.value = "";
+    chatImageFile.value = "";
   }
 }
 
-uploadBtn.onclick = () => hiddenFileInput.click();
+async function saveProfileAvatar() {
+  if (busy) return;
 
-hiddenFileInput.onchange = async () => {
-  const file = hiddenFileInput.files?.[0];
+  showProfileStatus("");
+  setBusy(true);
+
+  const oldAvatarPath = avatarPathLogado;
+  let newlyUploadedPath = null;
+
+  try {
+    let avatar_url = profileAvatarUrlInput.value.trim() || null;
+    let avatar_path = null;
+
+    if (profileAvatarFile) {
+      const uploaded = await uploadPublicImage(profileAvatarFile, `avatars/${usuarioLogadoId}`);
+      avatar_url = uploaded.url || null;
+      avatar_path = uploaded.path;
+      newlyUploadedPath = uploaded.path;
+    }
+
+    const { error } = await db
+      .from("usuarios")
+      .update({
+        avatar_url,
+        avatar_path
+      })
+      .eq("id", usuarioLogadoId);
+
+    if (error) {
+      if (newlyUploadedPath) {
+        await removeStorageObject(newlyUploadedPath);
+      }
+      showProfileStatus("Erro ao atualizar foto: " + error.message);
+      return;
+    }
+
+    avatarLogado = avatar_url;
+    avatarPathLogado = avatar_path;
+
+    userData.avatar_url = avatarLogado;
+    userData.avatar_path = avatarPathLogado;
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(userData));
+
+    if (oldAvatarPath && oldAvatarPath !== avatarPathLogado) {
+      await removeStorageObject(oldAvatarPath);
+    }
+
+    setAvatar(headerAvatar, usuarioLogado, avatarLogado);
+    setAvatar(profileAvatarPreview, usuarioLogado, avatarLogado);
+
+    profileAvatarUrlInput.value = avatarLogado || "";
+    showProfileStatus("Foto atualizada com sucesso.");
+    clearProfileAvatarSelection();
+  } catch (err) {
+    if (newlyUploadedPath) {
+      await removeStorageObject(newlyUploadedPath);
+    }
+    showProfileStatus("Erro ao atualizar foto: " + (err?.message || err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function changePassword() {
+  if (busy) return;
+
+  const current = profileCurrentPassword.value.trim();
+  const next = profileNewPassword.value.trim();
+  const confirm = profileConfirmPassword.value.trim();
+
+  if (!current || !next || !confirm) {
+    showProfileStatus("Preencha a senha antiga e a nova senha.");
+    return;
+  }
+
+  if (next.length > 100) {
+    showProfileStatus("A nova senha está muito longa.");
+    return;
+  }
+
+  if (next !== confirm) {
+    showProfileStatus("A nova senha e a confirmação não coincidem.");
+    return;
+  }
+
+  setBusy(true);
+
+  try {
+    const { data, error } = await db
+      .from("usuarios")
+      .select("senha")
+      .eq("id", usuarioLogadoId)
+      .maybeSingle();
+
+    if (error || !data) {
+      showProfileStatus("Não foi possível validar a senha antiga.");
+      return;
+    }
+
+    if (data.senha !== current) {
+      showProfileStatus("Senha antiga incorreta.");
+      return;
+    }
+
+    const { error: updateError } = await db
+      .from("usuarios")
+      .update({ senha: next })
+      .eq("id", usuarioLogadoId);
+
+    if (updateError) {
+      showProfileStatus("Erro ao alterar senha: " + updateError.message);
+      return;
+    }
+
+    profileCurrentPassword.value = "";
+    profileNewPassword.value = "";
+    profileConfirmPassword.value = "";
+    showProfileStatus("Senha alterada com sucesso.");
+  } catch (err) {
+    showProfileStatus("Erro ao alterar senha: " + (err?.message || err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+btnSaveProfileAvatar.onclick = saveProfileAvatar;
+btnChangePassword.onclick = changePassword;
+
+btnEnviar.onclick = sendTextMessage;
+
+btnPickImage.onclick = () => chatImageFile.click();
+chatImageFile.onchange = async () => {
+  const file = chatImageFile.files?.[0];
   if (file) {
     await sendImageFile(file);
   }
@@ -390,8 +668,6 @@ async function carregarMaisAntigas() {
   loadingOlder = false;
 }
 
-btnEnviar.onclick = sendTextMessage;
-
 db.channel("chat")
   .on("postgres_changes", {
     event: "INSERT",
@@ -409,9 +685,19 @@ db.channel("chat")
     event: "DELETE",
     schema: "public",
     table: "mensagens"
-  }, (payload) => {
+  }, async (payload) => {
     if (payload?.old?.id != null) {
       removeMessageNode(payload.old.id);
+    }
+
+    if (payload?.old?.image_path) {
+      try {
+        await db.storage
+          .from(IMAGE_BUCKET)
+          .remove([payload.old.image_path]);
+      } catch (err) {
+        console.warn("Erro ao deletar imagem:", err);
+      }
     }
   })
   .subscribe((status) => {
