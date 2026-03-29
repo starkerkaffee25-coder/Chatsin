@@ -16,8 +16,23 @@ const SESSION_KEY = "usuarioLogado";
 const IMAGE_BUCKET = "chat-media";
 const MAX_AVATAR_BYTES = 10 * 1024 * 1024;
 
-if (sessionStorage.getItem(SESSION_KEY)) {
-  sessionStorage.removeItem(SESSION_KEY);
+function syncUserStorage(user) {
+  const payload = JSON.stringify(user);
+  localStorage.setItem(SESSION_KEY, payload);
+  sessionStorage.setItem(SESSION_KEY, payload);
+}
+
+function getStoredUser() {
+  const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.id == null || !parsed.nome) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function initials(name) {
@@ -222,6 +237,12 @@ const avatarPicker = setupExclusiveAvatarPicker({
   previewEl: avatarPreview
 });
 
+const storedUser = getStoredUser();
+if (storedUser) {
+  nomeInput.value = storedUser.nome || "";
+  setAvatar(avatarPreview, storedUser.nome || "", storedUser.avatar_url || "");
+}
+
 document.getElementById("btnReg").onclick = async () => {
   const nome = nomeInput.value.trim();
   const senha = senhaInput.value.trim();
@@ -303,14 +324,15 @@ document.getElementById("btnLogin").onclick = async () => {
     return;
   }
 
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify({
-    id: data.id,
+  const userData = {
+    id: Number(data.id),
     nome: data.nome,
     avatar_url: data.avatar_url || null,
     avatar_path: data.avatar_path || null
-  }));
+  };
 
-  window.location.href = "chat.html";
+  syncUserStorage(userData);
+  window.location.href = "./chat.html";
 };
 
 avatarPreview.addEventListener("keydown", (e) => {
@@ -321,5 +343,4 @@ avatarPreview.addEventListener("keydown", (e) => {
 });
 
 avatarPreview.focus?.();
-
 avatarPicker.renderPreview();
