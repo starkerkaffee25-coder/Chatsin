@@ -8,6 +8,40 @@ const IMAGE_BUCKET = "chat-media";
 const PAGE_SIZE = 25;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+function syncUserStorage(user) {
+  const payload = JSON.stringify(user);
+  localStorage.setItem(SESSION_KEY, payload);
+  sessionStorage.setItem(SESSION_KEY, payload);
+}
+
+function getStoredUser() {
+  const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.id == null || !parsed.nome) return null;
+
+    const user = {
+      id: Number(parsed.id),
+      nome: String(parsed.nome),
+      avatar_url: parsed.avatar_url ?? null,
+      avatar_path: parsed.avatar_path ?? null
+    };
+
+    localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    return user;
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredUser() {
+  localStorage.removeItem(SESSION_KEY);
+  sessionStorage.removeItem(SESSION_KEY);
+}
+
 function initials(name) {
   const n = (name || "").trim();
   if (!n) return "?";
@@ -88,26 +122,13 @@ async function removeStorageObject(path) {
   }
 }
 
-const rawUser = sessionStorage.getItem(SESSION_KEY);
-if (!rawUser) {
-  window.location.href = "index.html";
-}
-
-let userData;
-try {
-  userData = JSON.parse(rawUser);
-} catch {
-  sessionStorage.removeItem(SESSION_KEY);
-  window.location.href = "index.html";
-}
-
-if (!userData?.id || !userData?.nome) {
-  sessionStorage.removeItem(SESSION_KEY);
-  window.location.href = "index.html";
+const userData = getStoredUser();
+if (!userData) {
+  window.location.href = "./index.html";
 }
 
 let usuarioLogado = userData.nome;
-let usuarioLogadoId = userData.id;
+let usuarioLogadoId = Number(userData.id);
 let avatarLogado = userData.avatar_url || null;
 let avatarPathLogado = userData.avatar_path || null;
 
@@ -121,6 +142,8 @@ const btnPickImage = document.getElementById("btnPickImage");
 const chatImageFile = document.getElementById("chatImageFile");
 const btnLogout = document.getElementById("btnLogout");
 const btnProfile = document.getElementById("btnProfile");
+const btnGames = document.getElementById("btnGames");
+
 const profileModal = document.getElementById("profileModal");
 const profileModalBackdrop = document.getElementById("profileModalBackdrop");
 const btnCloseProfile = document.getElementById("btnCloseProfile");
@@ -144,6 +167,7 @@ let loadingOlder = false;
 let busy = false;
 let profileAvatarFile = null;
 let profileAvatarObjectUrl = null;
+let refreshTimer = null;
 
 function setBusy(state) {
   busy = state;
@@ -152,6 +176,7 @@ function setBusy(state) {
   chatImageFile.disabled = state;
   btnLogout.disabled = state;
   btnProfile.disabled = state;
+  btnGames.disabled = state;
   btnSaveProfileAvatar.disabled = state;
   btnChangePassword.disabled = state;
   btnPickProfileAvatar.disabled = state;
@@ -216,7 +241,6 @@ function buildMessageNode(row) {
     image.style.marginTop = "8px";
     image.style.borderRadius = "14px";
     image.style.border = "1px solid rgba(255,255,255,.08)";
-
     body.appendChild(image);
 
     const caption = (row.texto || "").trim();
@@ -255,16 +279,22 @@ function clearProfileAvatarSelection() {
 }
 
 function renderProfileAvatarPreview() {
-  const source = profileAvatarObjectUrl
-    || profileAvatarUrlInput.value.trim()
-    || avatarLogado
-    || "";
+  const source =
+    profileAvatarObjectUrl ||
+    profileAvatarUrlInput.value.trim() ||
+    avatarLogado ||
+    "";
 
   setAvatar(profileAvatarPreview, usuarioLogado, source);
 }
 
 function setProfileAvatarFile(file) {
   if (!file || !file.type || !file.type.startsWith("image/")) {
+    return false;
+  }
+
+  if (file.size > MAX_IMAGE_BYTES) {
+    showProfileStatus("Imagem muito grande (máx. 10 MB).");
     return false;
   }
 
@@ -289,108 +319,58 @@ function openProfileModal() {
 
   profileModal.classList.remove("hidden");
   profileModal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
 }
 
 function closeProfileModal() {
   clearProfileAvatarSelection();
   profileModal.classList.add("hidden");
   profileModal.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
 }
 
-btnLogout.onclick = () => {
-  sessionStorage.removeItem(SESSION_KEY);
-  window.location.href = "index.html";
-};
+function goToGames() {
+  window.location.href = "./games/games.html";
+}
 
-btnProfile.onclick = openProfileModal;
-btnCloseProfile.onclick = closeProfileModal;
-profileModalBackdrop.onclick = closeProfileModal;
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !profileModal.classList.contains("hidden")) {
-    closeProfileModal();
-  }
-});
-
-btnPickProfileAvatar.onclick = () => profileAvatarFileInput.click();
-
-btnClearProfileAvatar.onclick = () => {
-  clearProfileAvatarSelection();
-  profileAvatarUrlInput.value = "";
-  renderProfileAvatarPreview();
-};
-
-profileAvatarFileInput.addEventListener("change", () => {
-  const file = profileAvatarFileInput.files?.[0];
-  if (!file) return;
-  setProfileAvatarFile(file);
-});
-
-profileAvatarUrlInput.addEventListener("input", () => {
-  if (profileAvatarUrlInput.value.trim()) {
-    clearProfileAvatarSelection();
-  }
-  renderProfileAvatarPreview();
-});
-
-const profilePasteHandler = (e) => {
-  const items = Array.from(e.clipboardData?.items || []);
-  const imageItem = items.find(
-    (item) => item.kind === "file" && item.type.startsWith("image/")
-  );
-
-  if (!imageItem) return;
-
-  const file = imageItem.getAsFile();
-  if (!file) return;
-
-  e.preventDefault();
-  setProfileAvatarFile(file);
-};
-
-profileAvatarUrlInput.addEventListener("paste", profilePasteHandler);
-profileAvatarPreview.addEventListener("paste", profilePasteHandler);
-profileAvatarPreview.addEventListener("click", () => profileAvatarFileInput.click());
-profileAvatarPreview.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    profileAvatarFileInput.click();
-  }
-});
-
-function sendTextMessage() {
+async function sendTextMessage() {
   if (busy) return;
 
   const texto = msgInput.value.trim();
   if (!texto) return;
 
+  if (!usuarioLogadoId) {
+    alert("Usuário inválido. Faça login novamente.");
+    clearStoredUser();
+    window.location.href = "./index.html";
+    return;
+  }
+
   setBusy(true);
 
-  (async () => {
-    try {
-      const { error } = await db.from("mensagens").insert({
-        usuario_id: usuarioLogadoId,
-        nome: usuarioLogado,
-        avatar_url: avatarLogado,
-        texto,
-        message_kind: "text",
-        image_url: null,
-        image_path: null,
-        image_size_bytes: null,
-        image_mime: null
-      });
+  try {
+    const { error } = await db.from("mensagens").insert({
+      usuario_id: usuarioLogadoId,
+      nome: usuarioLogado,
+      avatar_url: avatarLogado,
+      texto,
+      message_kind: "text",
+      image_url: null,
+      image_path: null,
+      image_size_bytes: null,
+      image_mime: null
+    });
 
-      if (error) {
-        alert("Erro ao enviar mensagem: " + error.message);
-        return;
-      }
-
-      msgInput.value = "";
-    } finally {
-      setBusy(false);
-      msgInput.focus();
+    if (error) {
+      alert("Erro ao enviar mensagem: " + error.message);
+      return;
     }
-  })();
+
+    msgInput.value = "";
+  } finally {
+    setBusy(false);
+    msgInput.focus();
+  }
 }
 
 async function sendImageFile(file) {
@@ -478,7 +458,7 @@ async function saveProfileAvatar() {
 
     userData.avatar_url = avatarLogado;
     userData.avatar_path = avatarPathLogado;
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(userData));
+    syncUserStorage(userData);
 
     if (oldAvatarPath && oldAvatarPath !== avatarPathLogado) {
       await removeStorageObject(oldAvatarPath);
@@ -562,54 +542,10 @@ async function changePassword() {
   }
 }
 
-btnSaveProfileAvatar.onclick = saveProfileAvatar;
-btnChangePassword.onclick = changePassword;
-
-btnEnviar.onclick = sendTextMessage;
-
-btnPickImage.onclick = () => chatImageFile.click();
-chatImageFile.onchange = async () => {
-  const file = chatImageFile.files?.[0];
-  if (file) {
-    await sendImageFile(file);
-  }
-};
-
-msgInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendTextMessage();
-  }
-});
-
-msgInput.addEventListener("paste", async (e) => {
-  if (busy) return;
-
-  const items = Array.from(e.clipboardData?.items || []);
-  const imageItem = items.find(item => item.kind === "file" && item.type.startsWith("image/"));
-
-  if (!imageItem) return;
-
-  const file = imageItem.getAsFile();
-  if (!file) return;
-
-  e.preventDefault();
-  await sendImageFile(file);
-});
-
-chatFeed.addEventListener("dragover", (e) => {
-  e.preventDefault();
-});
-
-chatFeed.addEventListener("drop", async (e) => {
-  e.preventDefault();
-  if (busy) return;
-
-  const file = Array.from(e.dataTransfer?.files || []).find(f => f.type.startsWith("image/"));
-  if (file) {
-    await sendImageFile(file);
-  }
-});
+function refreshHeader() {
+  currentName.textContent = usuarioLogado;
+  setAvatar(headerAvatar, usuarioLogado, avatarLogado || null);
+}
 
 async function carregarHistoricoInicial() {
   const { data, error } = await db
@@ -668,41 +604,143 @@ async function carregarMaisAntigas() {
   loadingOlder = false;
 }
 
-db.channel("chat")
-  .on("postgres_changes", {
-    event: "INSERT",
-    schema: "public",
-    table: "mensagens"
-  }, (payload) => {
-    const shouldScroll = isNearBottom(chatFeed);
-    chat.appendChild(buildMessageNode(payload.new));
+function subscribeChatRealtime() {
+  db.channel("chat")
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "mensagens"
+    }, (payload) => {
+      const shouldScroll = isNearBottom(chatFeed);
+      chat.appendChild(buildMessageNode(payload.new));
 
-    if (shouldScroll) {
-      scrollToBottom(chatFeed);
-    }
-  })
-  .on("postgres_changes", {
-    event: "DELETE",
-    schema: "public",
-    table: "mensagens"
-  }, async (payload) => {
-    if (payload?.old?.id != null) {
-      removeMessageNode(payload.old.id);
-    }
-
-    if (payload?.old?.image_path) {
-      try {
-        await db.storage
-          .from(IMAGE_BUCKET)
-          .remove([payload.old.image_path]);
-      } catch (err) {
-        console.warn("Erro ao deletar imagem:", err);
+      if (shouldScroll) {
+        scrollToBottom(chatFeed);
       }
-    }
-  })
-  .subscribe((status) => {
-    console.log("Realtime status:", status);
-  });
+    })
+    .on("postgres_changes", {
+      event: "DELETE",
+      schema: "public",
+      table: "mensagens"
+    }, async (payload) => {
+      if (payload?.old?.id != null) {
+        removeMessageNode(payload.old.id);
+      }
+
+      if (payload?.old?.image_path) {
+        try {
+          await db.storage
+            .from(IMAGE_BUCKET)
+            .remove([payload.old.image_path]);
+        } catch (err) {
+          console.warn("Erro ao deletar imagem:", err);
+        }
+      }
+    })
+    .subscribe((status) => {
+      console.log("Realtime status:", status);
+    });
+}
+
+btnLogout.onclick = () => {
+  clearStoredUser();
+  window.location.href = "./index.html";
+};
+
+btnGames.onclick = () => {
+  syncUserStorage(userData);
+  window.location.href = "./games/games.html";
+};
+
+btnProfile.onclick = openProfileModal;
+btnCloseProfile.onclick = closeProfileModal;
+profileModalBackdrop.onclick = closeProfileModal;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !profileModal.classList.contains("hidden")) {
+    closeProfileModal();
+  }
+});
+
+btnPickProfileAvatar.onclick = () => profileAvatarFileInput.click();
+
+btnClearProfileAvatar.onclick = () => {
+  clearProfileAvatarSelection();
+  profileAvatarUrlInput.value = "";
+  setAvatar(profileAvatarPreview, usuarioLogado, avatarLogado || "");
+};
+
+profileAvatarFileInput.addEventListener("change", () => {
+  const file = profileAvatarFileInput.files?.[0];
+  if (!file) return;
+  profileAvatarUrlInput.value = "";
+  profileAvatarFile = file;
+  if (profileAvatarObjectUrl) {
+    URL.revokeObjectURL(profileAvatarObjectUrl);
+  }
+  profileAvatarObjectUrl = URL.createObjectURL(file);
+  renderProfileAvatarPreview();
+});
+
+profileAvatarUrlInput.addEventListener("input", () => {
+  if (profileAvatarUrlInput.value.trim()) {
+    profileAvatarFileInput.value = "";
+    clearProfileAvatarSelection();
+  }
+  setAvatar(profileAvatarPreview, usuarioLogado, profileAvatarUrlInput.value.trim() || avatarLogado || "");
+});
+
+profileAvatarPreview.addEventListener("click", () => profileAvatarFileInput.click());
+profileAvatarPreview.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    profileAvatarFileInput.click();
+  }
+});
+
+btnSaveProfileAvatar.onclick = saveProfileAvatar;
+btnChangePassword.onclick = changePassword;
+btnEnviar.onclick = sendTextMessage;
+btnPickImage.onclick = () => chatImageFile.click();
+
+chatImageFile.onchange = async () => {
+  const file = chatImageFile.files?.[0];
+  if (file) {
+    await sendImageFile(file);
+  }
+};
+
+msgInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendTextMessage();
+  }
+});
+
+msgInput.addEventListener("paste", async (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItem = items.find(item => item.kind === "file" && item.type.startsWith("image/"));
+
+  if (!imageItem) return;
+
+  const file = imageItem.getAsFile();
+  if (!file) return;
+
+  e.preventDefault();
+  await sendImageFile(file);
+});
+
+chatFeed.addEventListener("dragover", (e) => {
+  e.preventDefault();
+});
+
+chatFeed.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const file = Array.from(e.dataTransfer?.files || []).find(f => f.type.startsWith("image/"));
+  if (file) {
+    await sendImageFile(file);
+  }
+});
 
 chatFeed.addEventListener("scroll", async () => {
   if (chatFeed.scrollTop <= 0) {
@@ -710,4 +748,12 @@ chatFeed.addEventListener("scroll", async () => {
   }
 });
 
-carregarHistoricoInicial();
+async function init() {
+  refreshHeader();
+  renderProfileAvatarPreview();
+  setAvatar(profileAvatarPreview, usuarioLogado, avatarLogado || null);
+  await carregarHistoricoInicial();
+  subscribeChatRealtime();
+}
+
+init();
